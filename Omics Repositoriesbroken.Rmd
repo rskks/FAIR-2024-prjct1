@@ -1,0 +1,407 @@
+---
+title: '''Omics Repositories in R''
+author: "Carly Bobak"
+date: "07/16/2023"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Intro to 'Omics
+
+'Omics data is a massively growing field for health data scientists. 'Omics refers to any type of data which has an -omics suffix; often genomics, transcriptomics, proteomics, epigenomics, metabolomics, etc. In all of these cases we are measuring molecular biological units and trying to associate them with phenotypes, or observable outcomes of interest. 
+
+```{r}
+knitr::include_graphics("https://ars.els-cdn.com/content/image/1-s2.0-S0065266015000516-gr1.jpg")
+```
+
+Working with 'omics data is non-trivial. 'Omics data is all considered 'semi-quantitative'; meaning that the values we work with in 'omics analyses are approximate measurements. This has major implications in terms of the 'messiness' of our data! Many values are considered relative, batch affects need to be carefully considered, technical variation is almost always present, and we suddenly need to think about our data in terms of signal-to-noise. 
+
+Moreover, becomes we're measuring molecular units in biology, we often measure thousands, even tens of thousands, variables (or features). However, its not feasible to have sample sizes that are thousands or tens of thousands big. Hence, in 'omics data we almost always have a $p>>n$ problem, meaning we have many more variables than samples. This has critical statistical implications that need to be kept in mind when we're designing our analysis pipelines. 
+
+Today, we'll be focused on analyzing some transcriptomics data. Transcriptomics refers to gene expression, or RNA, data. Most people here are probably very comfortable with the concept of DNA. As a reminder, proteins are the biological building blocks that most closely associate with phenotypes of interest. Following the central dogma of biology, we can think of gene expression as being a measurement of the rate at which your DNA is 'read' in order to make proteins!
+
+```{r}
+knitr::include_graphics("https://cdn.kastatic.org/googleusercontent/L8kQ3vnp9T_A_PiVE9rdNmPvmuG0gDuP_fToWTvtivpCaRwQj9Tv6cP13gq3kKUPwzx2Ou7nlWLHiHjOicrZLMOz")
+```
+
+We're focusing on gene expression data 1) because I'm very comfortable with it and have the domain expertise to be sure that I don't lead you astray, and 2) because gene expression data is often considered the 'backbone' of 'omics studies. Genes are highly interpretable, and through pathways connect to many other types of 'omics data! While (generally) DNA is not dynamically changing based diseases, exposures, etc. throughout your lifetime, gene expression is and is hence a good medium for identifying possible biomarkers associated with phenotypes of interest. 
+We'll be using data downloaded from the NCBI's Gene Expression Omnibus (GEO) <https://www.ncbi.nlm.nih.gov/geo/>, which houses 'omics data from thousands of studies. The dataset we'll specifically be analyzing is GSE73408 <https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE73408>.
+
+Notice that GSE73408 is collected on a microarray platform. A quick schematic of how microarray technology works is included below:
+
+```{r}
+knitr::include_graphics("https://www.mun.ca/biology/scarr/cDNA_microarray_Principle.jpg")
+```
+
+As you can see here, we're definitely considering semi-quantitative data generated from relative intensities. Its messy!
+
+## Downloading Publicly Available Data
+
+We can download the data as follows:
+
+```{r}
+Sys.setenv("VROOM_CONNECTION_SIZE"=131072*2)
+
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+#BiocManager::install("GEOquery")
+library("GEOquery")
+TBData<-getGEO("GSE6014",destdir = getwd())
+```
+
+If you look at the TBData object in your environment you'll see its a large list which contains a lot of annotated data associated with this study!
+
+### Exercise One
+
+Go the the Gene Expression Omnibus and select another study to analyze! Make sure that it is an 'Expression profiling by array' series, but otherwise search any topic that you're interested in!
+
+Load the data from GEO into a new object below:
+
+```{r}
+#your code here
+```
+
+
+## Processing Phenotype Data
+
+We can now analyze the phenotype data associated with the experiment!
+
+```{r}
+GEOset <- TBData[[1]] #we gave it 1 id we grab it 
+pheno<-pData(GEOset)
+# Subset phenotype data to only M059K rows
+pheno <- pheno[-c(1,4),]
+
+View(pheno)
+```
+
+Notice in this table we have all kinds of clinical information associated with each sample in our study. It is worth noting that there is no 'standard' format for these pheno files, and in different studies they tend to include very different information. You always will need to explore these files from scratch whenever they are downloaded from GEO. 
+
+Here, we'll pull out some of the useful clinical variables from the end of the pheno file:
+
+```{r}
+library(tidyverse)
+library(magrittr)
+#select columns
+#pheno %<>% dplyr::select(`clinical group:ch1`, `diabetes:ch1`, `birthcountry:ch1`, `age:ch1`, `Sex:ch1`, #`race:ch1`, `current smoker:ch1`) %>% mutate(binLabel=ifelse(`clinical group:ch1`=="TB","1","0"))
+#tidy column names
+colnames(pheno)<-gsub(":.*","",colnames(pheno))
+head(pheno)
+dim(pheno)
+```
+
+We'll clean up our object types and summarize our file before we interpret the data we have here. 
+
+```{r}
+#data type convert
+pheno$age<-as.numeric(pheno$age)
+pheno[sapply(pheno, is.character)] <- lapply(pheno[sapply(pheno,is.character)], as.factor)
+summary(pheno)
+```
+So as you can see here, we have lots of clinical data! Our primary outcome of interest in this case is the clinical group, which contains our disease classes of interest. In it, we have TB, latent (asymptomatic) TB infection (LTBI), and pneumonia (PNA). We also have useful information on some TB co-morbidities, such as diabetes and smoking status. You'll see that I also added a column with a binary label, here which indicates TB vs Not TB. 
+
+### Exercise Two
+
+Go back to the data you selected from GEO. Extract the phenotype file, and subset it to a couple of clinical outcomes of interest. Choose one outcome to build a binary label for. 
+
+```{r}
+#your code here
+```
+
+## Processing Expression Data
+
+We can now extract the expression file from our downloaded data. 
+
+```{r}
+expr<-exprs(GEOset)
+dim(expr)
+```
+
+Right away, you should notice that we have 109 columns, and we had 109 rows in the pheno file. The rownames of the pheno file are the column names in the expression file!
+
+```{r}
+head(colnames(expr))
+head(rownames(pheno))
+```
+
+Just like the phenotype files, there is no standard format for our expression array file. Typically in gene expression data we need to:
+1) Background correct 
+2) Normalize 
+3) $Log_2$ transform 
+4) (optional) mean or median center 
+all our values in order to do any further analysis. We can assess how many of these steps have already been completed by checking a quick boxplot of the data:
+
+```{r}
+boxplot(expr[,1:10])
+```
+
+Things to notice here include: 1) the median lines on the boxplots appear to be approximately the same in every sample. This indicates that the data has been normalized. 2) The data is already in log scale. 3) The data is not mean or median centered.
+
+We'll talk about centering data in a minute, but first lets look at what expression data looks like before is background corrected, normalized, and $log_2$ transformed.
+
+You'll also want to check to see what format your gene names are currently in. Sometimes data will be uploaded with genes indicated by their standard HUGO format. Othertimes, data will be uploaded with probe IDs which are specific to the instrument used to measure the gene expression data. 
+
+```{r}
+head(rownames(expr))
+```
+
+This series of numbers is clearly not gene names; so it must be probe IDs! We'll have to map these back. Now in order to map to gene symbols, we need to find some kind of key that contains the right information. We have two options here. 1) We can look through software files associated with our array chip for the right information; or 2) we can identify an annotation database that gives us a mapping between probes and gene names. In this case, we'll need to use 1) as the annotation databases for our particular chip currently has a bug in it which makes it unusable (all the gene names are missing :P). 
+
+We can access the software file as follows:
+
+```{r}
+# Get the annotation GPL id (see Annotation: GPL10558)
+gpl <- getGEO('GPL11532', destdir=".")
+
+# Inspect the table of the gpl annotation object
+View(Table(gpl))
+```
+
+In the gene assignment column we have information containing gene names! We will need to use NLP to extract this:
+
+```{r}
+probeIDs<-Table(gpl)$ID
+geneNames<-rep(NA,length(probeIDs))
+
+for(i in 1:length(probeIDs)){
+  geneNames[i]<-trimws(str_split(Table(gpl)[i,"gene_assignment"],pattern="//")[[1]][2])
+}
+
+names(geneNames)<-probeIDs
+head(geneNames)
+```
+
+Now we can add gene names to our expression file!
+
+```{r}
+rownames(expr)<-geneNames[rownames(expr)]
+View(expr)
+```
+
+### Working with Raw Data 
+
+We can download the raw expression files using the following code:
+
+
+```{r}
+#BiocManager::install("affy")
+#BiocManager::install("oligo")
+library(affy)
+library(oligo)
+set<-"GSE73408"
+name<-paste("SuppData",set,sep="")
+check<-getGEOSuppFiles(set) #gets the supplementary files
+pathName<-grep("tar",rownames(check),value=T) #selects the expression files
+files<-untar(pathName,exdir=set,list=T) #pointer to right files
+untar(pathName, exdir = paste("./",set,sep="")) #untars files into computer directory
+assign(name, files) #assigns the file path
+setwd(paste(getwd(),set,sep="/")) #into the files directory
+SampleFiles<-grep("GSM",list.files(),value=T)
+#sanitycheck
+length(SampleFiles)
+#read the files
+geo_raw_expr <- read.celfiles(SampleFiles)
+```
+
+Now lets plot the raw values and compare to the pre-processed data we had before:
+
+```{r}
+#extract expression data
+raw_expr <- exprs(geo_raw_expr)
+#plot
+boxplot(raw_expr[,1:10])
+```
+As you can see, the pre-processed data is super different! Most noticably here, the semi-quantitative approximations are actually count data! Moreover:
+
+```{r}
+medians<-apply(raw_expr,2,median)
+min(medians)
+max(medians)
+```
+
+The medians are not the same between all our samples, indicating that normalization has not yet occured. 
+
+Luckily, this is an affymetrix platform, which has really user friendly R packages to background correct, normalize, and $log_2$ transform our data:
+
+```{r}
+rma_expr <- rma(geo_raw_expr,target="core")
+processed_expr<-exprs(rma_expr)
+boxplot(processed_expr[,1:10])
+```
+
+This now looks a lot more like the processed data we had before. We can quickly fix our sample names:
+
+```{r}
+sampleNames<-c()
+#set the basecase
+sampleNames<-strsplit(SampleFiles[1],split="_")[[1]][1]
+#fill in the others
+for(i in 2:length(SampleFiles)){
+sampleNames[i]<-strsplit(SampleFiles[i],split="_")[[1]][1]
+}
+#assign to column names
+colnames(processed_expr)<-sampleNames
+head(colnames(processed_expr))
+```
+
+Now, you may notice: 
+
+```{r}
+dim(processed_expr)
+```
+
+The dimensions of our manually processed expression data are not the same in the processed data we originally downloaded. That's because our data is currently measuring PROBE IDs and not genes. Here, each probe ID is associated with our array chip and maps to a gene of interest, where we have some genes that map to many probes (1 to many problem). You can see what our probe IDs look like here:
+
+```{r}
+head(rownames(processed_expr))
+```
+
+Now in order to map to gene symbols, we need to find some kind of key that contains the right information. We have two options here. 1) We can look through software files associated with our array chip for the right information; or 2) we can identify an annotation database that gives us a mapping between probes and gene names. In this case, we'll need to use 1) as the annotation databases for our particular chip currently has a bug in it which makes it unusable (all the gene names are missing :P). 
+
+We can access the software file as follows:
+
+```{r}
+# Get the annotation GPL id (see Annotation: GPL10558)
+gpl <- getGEO('GPL11532', destdir=".")
+
+# Inspect the table of the gpl annotation object
+View(Table(gpl))
+```
+
+In the gene assignment column we have information containing gene names! We will need to use NLP to extract this:
+
+```{r}
+probeIDs<-Table(gpl)$ID
+geneNames<-rep(NA,length(probeIDs))
+
+for(i in 1:length(probeIDs)){
+  geneNames[i]<-trimws(str_split(Table(gpl)[i,"gene_assignment"],pattern="//")[[1]][2])
+}
+
+names(geneNames)<-probeIDs
+head(geneNames)
+```
+
+Now we can add gene names to our expression file!
+
+```{r}
+processed_expr<-data.frame(geneNames[rownames(processed_expr)],processed_expr)
+colnames(processed_expr)[1]<-"SYMBOL"
+processed_expr %<>% arrange(SYMBOL)
+head(processed_expr,10)
+```
+We can now solve the one-to-many problem. My go-to method here is to take the median expression value! We can do this using some of our favourite tools in the tidyverse!
+
+```{r}
+#note, this takes a bit, don't run in class!
+library(magrittr)
+processed_expr %<>% group_by(SYMBOL) %>% summarise_each(funs(median(.,na.rm=T)))
+dim(processed_expr)
+```
+
+This is now looking better! Now all we have to do is make our rownames gene symbols and we have officially processed our own gene expression data:
+
+```{r}
+processed_expr<-as.data.frame(processed_expr)
+processed_expr<-processed_expr[-nrow(processed_expr),]
+rownames(processed_expr)<-processed_expr$SYMBOL
+processed_expr$SYMBOL<-NULL
+```
+
+### Centering Data
+
+We could now move forward with our own processed data, or alternatively use the processed data that we've already downloaded! In most cases, researchers use the processed data as uploaded to GEO by the original collectors and that is perfectly fine! Working with the raw or supplementary data can be a lot more difficult and requires knowledge of many instrument types, so as long as you understand broadly what steps have occured in your data so far, it is okay to take advantage of cleaner data!
+
+The last consideration with our expression array data is mean or median centering. As you know, our gene expression values were originally counts, that have been background corrected, normalized, and $log_2$ transformed. These steps make it difficult to interpret what exactly each value in the expression array data indicates. Centering our data can be helpful in that regard. If we center each gene to its mean or median, we can then interpret expressions as being 'above' or 'below' average in our sample. To do this:
+
+```{r}
+median_center <- function(x) {
+    apply(x, 2, function(y) y - median(y))
+}
+
+# apply it
+expr_center<-t(median_center(t(expr))) #note the transpose to make sure we center on gene
+boxplot(expr_center[,1:10])
+boxplot(t(expr_center[1:10,]))
+```
+
+We now have usable and interpretable expresson values!
+
+### Exercise Three
+
+Extract the gene expression from your own dataset, and make a boxplot of the first 10 samples. Decide if your data is
+1) Normalized.
+2) $Log_2$ Transformed.
+3) Mean or Median Centered. 
+
+Note: if your data is not normalized, you'll need to do some digging! Different instruments for analysis may have different packages or recommendations for normalization. This is usually one simple line of code; the complexity is in making sure you use the right line of code. In most cases, data which is downloaded in its 'typical' format from GEO will be normalized.
+
+```{r}
+# your code here
+```
+
+## Analysing 'Omics Data
+
+We can now analyze our 'omics data! There are many exciting analysis choices we could make, including use of machine learning and deep learning algorithms. 
+
+A common task in analyzing 'Omics data is to find genes associated with an outcome of interest. We'll use a simple Wilcox test to associate genes of interest with our binary label for TB vs not TB. 
+
+```{r}
+pvals<-c()
+expr_center<-t(expr_center) #put genes in columns
+
+#calculate a wilcox test across each gene
+for(i in 1:ncol(expr_center)){
+  pvals[i]<-wilcox.test(expr_center[pheno$binLabel==0,i],expr_center[pheno$binLabel==1,i])$p.value
+}
+
+#adjust our pvals
+adjpvals<-p.adjust(pvals,method="fdr")
+
+#find sig genes
+biom_ix<-which(adjpvals<0.005)
+biomarkers<-colnames(expr_center)[biom_ix]
+length(biomarkers)
+```
+
+So we've now found 432 genes associated with TB!
+
+We can visualize these using a heatmap. 
+
+```{r}
+#install.packages(pheatmap)
+library(pheatmap)
+library(RColorBrewer)
+
+expr_sub<-expr_center[,biomarkers]
+
+column_annot<-pheno[,c("clinical group","current smoker")]
+rownames(column_annot)<-rownames(pheno)
+
+pheat_colors<-list(`clinical group`=c(TB="dark blue",LTBI="sky blue",PNA="firebrick"),
+                   `current smoker` = c (yes = "black", no= "goldenrod") )
+
+pheatmap(t(expr_sub),show_rownames = F,show_colnames = F,annotation_col = column_annot,
+         annotation_colors = pheat_colors, clustering_distance_cols = "manhattan", clustering_distance_rows = "manhattan", breaks=seq(from=-2, to=2, length.out=101))
+```
+
+As seen in the annotation above, some clustering by disease status, with two pretty strong clusters for LTBI and TB (with some tricky PNA cases) respectively. With more ML methods, we could likely improve this further!
+
+### Exercise Four
+
+Print out the list of significantly expressed genes. Head on over to gProfiler <https://biit.cs.ut.ee/gprofiler/gost> and identify some annotated functions and pathways enriched for the printed genes. Do these pathways seem meaningful for an infectious disease like TB? 
+
+Hint: we named our vector of significantly expression genes 'biomarkers'
+
+Hint II: I often prefer to look at GO:BP and Reactome pathways as a starting place.
+
+```{r}
+
+```
+
+
+
