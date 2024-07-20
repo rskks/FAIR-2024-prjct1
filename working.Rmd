@@ -3,17 +3,132 @@ title: "R Notebook"
 output: html_notebook
 ---
 
-This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
-
-Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
-
 ```{r}
-plot(cars)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+# Load the GEOquery package
+#BiocManager::install("GEOquery")
+library(GEOquery)
+
+# Download the data
+gse <- getGEO("GSE6014", GSEMatrix =TRUE, destdir = getwd())
 ```
 
-Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
 
-When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+```{r}
+# Extract the expression data
+# gse <- gse[[1]]
 
-The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+# Extract phenotype data
+phenoData <- pData(phenoData(gse[[1]]))
 
+# Subset phenotype data to only M059K rows
+phenoData2 <- phenoData[-c(1,4),]
+# Subest phenotype data to only cell_line and treatment columns
+phenoData2 <- phenoData2[,c(1,2)]
+
+# Clean up and rename values in the title column
+cleanednames <- c('untreated', 'treated')
+phenoData2$title <- cleanednames
+
+# Rename title column to treatment
+colnames(phenoData2) <- c('treatment','geo_accession')
+
+#Phenotype data2 convert values to factor
+phenoData2[sapply(phenoData2, is.character)] <- lapply(phenoData2[sapply(phenoData2,is.character)], as.factor)
+```
+
+```{r}
+# Extract expression data
+expr <- exprs(gse[[1]])
+
+# Subset expression data to only M059K rows
+expr <- expr[,-c(1,4)]
+                         
+# Transpose the expression data
+#expr <- t(expr)
+
+# Create a data frame with the expression data
+#exprsData2 <- as.data.frame(exprsDataT)
+
+# Add the phenotype data to the expression data
+#exprsData2$cell_line <- phenoData2$cell_line
+```
+
+```{r}
+# Get the annotation GPL id (see Annotation: GPL10558)
+gpl <- getGEO('GPL96', destdir=".")
+
+# Inspect the table of the gpl annotation object
+View(Table(gpl))
+```
+```{r}
+# Extract probe IDs and ENTREZ_GENE_IDs
+probeIDs <- Table(gpl)$ID
+
+entrezGeneIDs <- Table(gpl)$ENTREZ_GENE_ID
+
+# Initialize an empty vector to store gene IDs as strings
+geneNames <- rep(NA, length(probeIDs))
+
+# Loop through probe IDs and split ENTREZ_GENE_IDs by the delimiter, then concatenate
+for(i in 1:length(probeIDs)){
+  geneNames[i] <- str_split(entrezGeneIDs[i], pattern = " /// ")[[1]][1]
+}
+
+# Assign probe IDs as names to the geneNames vector
+names(geneNames) <- probeIDs
+
+# Display the head of the named vector
+head(geneNames)
+
+```
+
+Now we can add gene names to our expression file!
+
+```{r}
+rownames(expr)<-geneNames[rownames(expr)]
+View(expr)
+```
+
+Just like the phenotype files, there is no standard format for our expression array file. Typically in gene expression data we need to:
+1) Background correct 
+2) Normalize 
+3) $Log_2$ transform 
+4) (optional) mean or median center 
+all our values in order to do any further analysis. We can assess how many of these steps have already been completed by checking a quick boxplot of the data:
+
+```{r}
+expr2 <- data.frame(t(expr))
+boxplot(expr2[,1:10])
+```
+Determine how many genes had zero counts and remove these genes (rows) from the data set.
+
+```{r}
+MinVals <- apply(expr2, 1, min)
+sum(MinVals == 0) 
+```
+
+```{r}
+ExpLog2 <- log2(expr2)
+hist(rowMeans(ExpLog2), xlab = "Counts (log2)", main = "Expressed Genes")
+
+SampleMedians <- apply(expr2, 1, median) # Find the median value of each column - 2 means column
+GrandMedian <- mean(SampleMedians) # Take the average of those
+CorrectionFactors <- GrandMedian - SampleMedians # Calculate correction factor to apply to data
+CorrectionFactors
+```
+
+```{r}
+ExpNorm <- ExpLog2
+
+for(col in colnames(ExpNorm)){
+  ExpNorm[, col] <- ExpLog2[, col] + CorrectionFactors[col]
+}
+```
+Do a simple normalization of your data and visualize your normalized data with a boxplot of log2 raw counts and a cluster dendrogram.
+
+```{r}
+boxplot(ExpNorm[,1:20], main = "ExpLog2 Data")
+```
