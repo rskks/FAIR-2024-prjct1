@@ -154,8 +154,8 @@ This series of numbers is clearly not gene names; so it must be probe IDs! We'll
 We can access the software file as follows:
 
 ```{r}
-# Get the annotation GPL id (see Annotation: GPL10558)
-gpl <- getGEO('GPL11532', destdir=".")
+# Get the annotation GPL id (see Annotation: GPL10558) OLEG my gpl is https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GPL96
+gpl <- getGEO('GPL96', destdir=".")
 
 # Inspect the table of the gpl annotation object
 View(Table(gpl))
